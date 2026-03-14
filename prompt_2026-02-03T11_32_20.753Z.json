@@ -1,0 +1,1029 @@
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { Settings as SettingsIcon, ShoppingBag, Volume2, VolumeX, Music, Music2, Smartphone, Languages, X, RotateCcw, Play, Trophy, Home, Pause, LayoutGrid, Palette } from 'lucide-react';
+import { GameState, Block, Debris, Settings, Skin } from '../types';
+import { audioManager } from '../services/audioEngine';
+
+// --- OYUN AYARLARI ---
+const CONFIG = {
+  BLOCK_HEIGHT: 36,
+  START_WIDTH: 180,
+  START_DEPTH: 180,
+  MOVE_SPEED_BASE: 3.8,
+  MOVE_SPEED_MAX: 9.0,
+  PERFECT_TOLERANCE: 7,
+  BG_COLOR: '#050510',
+  CAMERA_LERP: 0.1,
+  INPUT_COOLDOWN: 180,
+};
+
+const GameCanvas: React.FC = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const requestRef = useRef<number>(0);
+  
+  const stackRef = useRef<Block[]>([]);
+  const debrisRef = useRef<Debris[]>([]);
+  const currentBlockRef = useRef<Block | null>(null);
+  const stateRef = useRef<GameState>(GameState.START);
+  const scoreRef = useRef<number>(0);
+  const cameraYRef = useRef<number>(0);
+  const visualCameraYRef = useRef<number>(0);
+  const perfectComboRef = useRef<number>(0);
+  const hueRef = useRef<number>(270);
+  const flashOpacityRef = useRef<number>(0);
+  const lastInputTimeRef = useRef<number>(0);
+  const starsRef = useRef<{x: number, y: number, size: number}[]>([]);
+
+  const [uiState, setUiState] = useState<GameState>(GameState.START);
+  const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(() => Number(localStorage.getItem('neon_stack_highscore') || 0));
+  const [showPerfect, setShowPerfect] = useState(false);
+  
+  const [settings, setSettings] = useState<Settings>(() => {
+    const saved = localStorage.getItem('neon_stack_settings');
+    return saved ? JSON.parse(saved) : {
+      language: 'tr',
+      soundEnabled: true,
+      musicEnabled: true,
+      vibrationEnabled: true
+    };
+  });
+
+  const [money, setMoney] = useState(() => Number(localStorage.getItem('neon_stack_money') || 0));
+  const [unlockedItems, setUnlockedItems] = useState<string[]>(() => {
+    const saved = localStorage.getItem('neon_stack_unlocked');
+    return saved ? JSON.parse(saved) : ['default'];
+  });
+  const [currentSkinId, setCurrentSkinId] = useState(() => localStorage.getItem('neon_stack_skin') || 'default');
+  const [currentBackgroundId, setCurrentBackgroundId] = useState(() => localStorage.getItem('neon_stack_bg') || 'default');
+  const [currentThemeId, setCurrentThemeId] = useState(() => localStorage.getItem('neon_stack_theme') || 'default');
+  const [marketTab, setMarketTab] = useState<'skins' | 'backgrounds' | 'themes'>('skins');
+  
+  const skins: Skin[] = [
+    { id: 'default', name: 'Neon Classic', price: 0, hue: 270, unlocked: unlockedItems.includes('default') },
+    { id: 'emerald', name: 'Emerald City', price: 100, hue: 150, unlocked: unlockedItems.includes('emerald') },
+    { id: 'ruby', name: 'Ruby Core', price: 250, hue: 0, unlocked: unlockedItems.includes('ruby') },
+    { id: 'gold', name: 'Golden Era', price: 500, hue: 50, unlocked: unlockedItems.includes('gold') },
+    { id: 'cyber', name: 'Cyber Blue', price: 1000, hue: 200, unlocked: unlockedItems.includes('cyber') },
+  ];
+
+  const backgrounds = [
+    { id: 'default', name: 'Deep Space', price: 0, unlocked: unlockedItems.includes('default') },
+    { id: 'grid', name: 'Neon Grid', price: 300, unlocked: unlockedItems.includes('grid') },
+    { id: 'mountains', name: 'Synth Peaks', price: 600, unlocked: unlockedItems.includes('mountains') },
+    { id: 'minimal', name: 'Pure Dark', price: 1000, unlocked: unlockedItems.includes('minimal') },
+  ];
+
+  const themes = [
+    { id: 'default', name: 'Retro Wave', price: 0, unlocked: unlockedItems.includes('default') },
+    { id: 'vapor', name: 'Vaporwave', price: 500, unlocked: unlockedItems.includes('vapor') },
+    { id: 'matrix', name: 'Matrix', price: 800, unlocked: unlockedItems.includes('matrix') },
+    { id: 'sunset', name: 'Sunset Drive', price: 1500, unlocked: unlockedItems.includes('sunset') },
+  ];
+
+  const currentSkin = skins.find(s => s.id === currentSkinId) || skins[0];
+
+  const t = {
+    tr: {
+      title: 'NEON YIĞIN',
+      start: 'BAŞLAT',
+      elevation: 'YÜKSEKLİK',
+      maxRecord: 'EN İYİ',
+      gameOver: 'BAĞLANTI KOPTU',
+      stabilityLost: 'Sistem Kararlılığı Kayboldu',
+      blocksAscended: 'Çıkılan Kat',
+      newRecord: '--- YENİ REKOR ---',
+      tryAgain: 'TEKRAR DENE',
+      settings: 'AYARLAR',
+      market: 'MARKET',
+      language: 'DİL',
+      sound: 'SES',
+      music: 'MÜZİK',
+      vibration: 'TİTREŞİM',
+      close: 'KAPAT',
+      unlocked: 'AÇIK',
+      locked: 'KİLİTLİ',
+      select: 'SEÇ',
+      selected: 'SEÇİLDİ',
+      money: 'KREDİ',
+      home: 'ANA MENÜ',
+      pause: 'DURDUR',
+      resume: 'DEVAM ET',
+      skins: 'GÖRÜNÜM',
+      backgrounds: 'ARKA PLAN',
+      themes: 'TEMA',
+      buy: 'SATIN AL',
+      perfect: 'MÜKEMMEL',
+      neuralLink: 'Nöral Bağlantı Hazır',
+      syncing: 'Ses Eşitleniyor...'
+    },
+    en: {
+      title: 'NEON STACK',
+      start: 'START',
+      elevation: 'ELEVATION',
+      maxRecord: 'BEST',
+      gameOver: 'DISCONNECTED',
+      stabilityLost: 'Neural Stability Lost',
+      blocksAscended: 'Blocks Ascended',
+      newRecord: '--- NEW RECORD ---',
+      tryAgain: 'TRY AGAIN',
+      settings: 'SETTINGS',
+      market: 'MARKET',
+      language: 'LANG',
+      sound: 'SOUND',
+      music: 'MUSIC',
+      vibration: 'VIBRATE',
+      close: 'CLOSE',
+      unlocked: 'UNLOCKED',
+      locked: 'LOCKED',
+      select: 'SELECT',
+      selected: 'SELECTED',
+      money: 'CREDITS',
+      home: 'HOME',
+      pause: 'PAUSE',
+      resume: 'RESUME',
+      skins: 'SKINS',
+      backgrounds: 'BG',
+      themes: 'THEMES',
+      buy: 'BUY',
+      perfect: 'PERFECT',
+      neuralLink: 'Neural Link Ready',
+      syncing: 'Syncing Generative Audio...'
+    }
+  }[settings.language];
+
+  // --- YARDIMCI FONKSİYONLAR ---
+
+  const vibrate = (ms: number | number[]) => {
+    if (settings.vibrationEnabled && navigator.vibrate) {
+      navigator.vibrate(ms);
+    }
+  };
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_settings', JSON.stringify(settings));
+    audioManager.setSoundVolume(settings.soundEnabled ? 0.25 : 0);
+    audioManager.setMusicVolume(settings.musicEnabled ? 0.1 : 0);
+    if (settings.musicEnabled && uiState !== GameState.START) {
+      audioManager.startMusic();
+    } else {
+      audioManager.stopMusic();
+    }
+  }, [settings, uiState]);
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_money', money.toString());
+  }, [money]);
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_skin', currentSkinId);
+  }, [currentSkinId]);
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_bg', currentBackgroundId);
+  }, [currentBackgroundId]);
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_theme', currentThemeId);
+  }, [currentThemeId]);
+
+  useEffect(() => {
+    localStorage.setItem('neon_stack_unlocked', JSON.stringify(unlockedItems));
+  }, [unlockedItems]);
+
+  useEffect(() => {
+    // Initialize stars
+    const stars = [];
+    for (let i = 0; i < 100; i++) {
+      stars.push({
+        x: Math.random() * 2000,
+        y: Math.random() * 2000,
+        size: Math.random() * 2
+      });
+    }
+    starsRef.current = stars;
+  }, []);
+
+  // --- ÇİZİM FONKSİYONLARI ---
+
+  const drawNote = (ctx: CanvasRenderingContext2D, d: Debris) => {
+    const { x, y, width, hue, rotation, opacity } = d;
+    const drawY = y + visualCameraYRef.current;
+    
+    ctx.save();
+    ctx.translate(x + width / 2, drawY);
+    ctx.rotate(rotation);
+    ctx.globalAlpha = opacity;
+
+    const color = `hsl(${hue}, 100%, 70%)`;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = color;
+
+    // Note Head (Ellipse)
+    ctx.beginPath();
+    ctx.ellipse(0, 0, width / 2, width / 3, Math.PI / -4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Stem
+    const stemHeight = 40;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(width / 2 - 2, 0);
+    ctx.lineTo(width / 2 - 2, -stemHeight);
+    ctx.stroke();
+
+    // Flags based on size (Sıralandırma: Küçüldükçe nota karmaşıklaşır)
+    if (width < 30) {
+      // Sixteenth Note (Smallest - Double Flag)
+      ctx.beginPath();
+      ctx.moveTo(width / 2 - 2, -stemHeight);
+      ctx.bezierCurveTo(width / 2 + 15, -stemHeight + 10, width / 2 + 15, -stemHeight + 20, width / 2 + 5, -stemHeight + 15);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(width / 2 - 2, -stemHeight + 10);
+      ctx.bezierCurveTo(width / 2 + 15, -stemHeight + 20, width / 2 + 15, -stemHeight + 30, width / 2 + 5, -stemHeight + 25);
+      ctx.stroke();
+    } else if (width < 60) {
+      // Eighth Note (Medium - Single Flag)
+      ctx.beginPath();
+      ctx.moveTo(width / 2 - 2, -stemHeight);
+      ctx.bezierCurveTo(width / 2 + 20, -stemHeight + 10, width / 2 + 20, -stemHeight + 25, width / 2 + 5, -stemHeight + 20);
+      ctx.stroke();
+    }
+    // Large pieces stay as Quarter Notes (No flag)
+
+    ctx.restore();
+  };
+
+  const drawBlock3D = (ctx: CanvasRenderingContext2D, b: Block) => {
+    const { x, y, width, hue } = b;
+    const height = CONFIG.BLOCK_HEIGHT;
+    const drawY = y + visualCameraYRef.current;
+
+    if (drawY > ctx.canvas.height || drawY + height < -200) return;
+
+    // Main Body
+    const grad = ctx.createLinearGradient(x, drawY, x, drawY + height);
+    grad.addColorStop(0, `hsl(${hue}, 100%, 60%)`);
+    grad.addColorStop(1, `hsl(${hue}, 100%, 30%)`);
+    
+    ctx.fillStyle = grad;
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = `hsl(${hue}, 100%, 50%)`;
+    ctx.fillRect(x, drawY, width, height);
+    ctx.shadowBlur = 0;
+
+    // Top Highlight
+    ctx.fillStyle = `hsl(${hue}, 100%, 85%)`;
+    ctx.fillRect(x, drawY, width, 4);
+
+    // Side Shine
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.fillRect(x, drawY + 4, 3, height - 4);
+
+    // Bottom Shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillRect(x, drawY + height - 4, width, 4);
+
+    // Border
+    ctx.strokeStyle = `hsl(${hue}, 100%, 80%)`;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, drawY, width, height);
+
+    // Glow Layer (Additive)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `hsla(${hue}, 100%, 50%, 0.08)`;
+    ctx.fillRect(x - 5, drawY - 5, width + 10, height + 10);
+    ctx.restore();
+  };
+
+  const drawBackground = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    // Sky Gradient
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, height);
+    
+    if (currentThemeId === 'vapor') {
+      skyGrad.addColorStop(0, '#ff71ce');
+      skyGrad.addColorStop(0.5, '#01cdfe');
+      skyGrad.addColorStop(1, '#05ffa1');
+    } else if (currentThemeId === 'matrix') {
+      skyGrad.addColorStop(0, '#000000');
+      skyGrad.addColorStop(1, '#001a00');
+    } else if (currentThemeId === 'sunset') {
+      skyGrad.addColorStop(0, '#2b002b');
+      skyGrad.addColorStop(0.5, '#ff4500');
+      skyGrad.addColorStop(1, '#ffd700');
+    } else {
+      skyGrad.addColorStop(0, '#02020a');
+      skyGrad.addColorStop(0.5, '#0a0515');
+      skyGrad.addColorStop(1, '#150525');
+    }
+    
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    // Stars
+    if (currentBackgroundId !== 'minimal') {
+      ctx.save();
+      ctx.fillStyle = currentThemeId === 'matrix' ? '#00ff00' : '#ffffff';
+      starsRef.current.forEach(star => {
+        const sx = (star.x) % width;
+        const sy = (star.y + visualCameraYRef.current * 0.1) % height;
+        ctx.globalAlpha = 0.3 + Math.random() * 0.4;
+        ctx.fillRect(sx, sy, star.size, star.size);
+      });
+      ctx.restore();
+    }
+
+    // Distant Mountains
+    if (currentBackgroundId === 'mountains' || currentBackgroundId === 'default') {
+      ctx.save();
+      ctx.strokeStyle = currentThemeId === 'matrix' ? 'rgba(0, 255, 0, 0.1)' : 'rgba(255, 0, 255, 0.1)';
+      ctx.lineWidth = 2;
+      const mY = height * 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, mY);
+      for (let i = 0; i <= 10; i++) {
+        const mx = (width / 10) * i;
+        const my = mY - (i % 2 === 0 ? 100 : 150) - (Math.sin(i + visualCameraYRef.current * 0.001) * 20);
+        ctx.lineTo(mx, my);
+      }
+      ctx.lineTo(width, mY);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Synthwave Sun
+    if (currentBackgroundId !== 'minimal') {
+      const sunY = height * 0.4;
+      const sunRadius = Math.min(width, height) * 0.25;
+      const sunGrad = ctx.createLinearGradient(0, sunY - sunRadius, 0, sunY + sunRadius);
+      
+      if (currentThemeId === 'matrix') {
+        sunGrad.addColorStop(0, '#00ff00');
+        sunGrad.addColorStop(1, '#003300');
+      } else if (currentThemeId === 'vapor') {
+        sunGrad.addColorStop(0, '#b967ff');
+        sunGrad.addColorStop(1, '#05ffa1');
+      } else {
+        sunGrad.addColorStop(0, '#ff00ff');
+        sunGrad.addColorStop(0.5, '#ff8000');
+        sunGrad.addColorStop(1, '#ffff00');
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(width / 2, sunY, sunRadius, 0, Math.PI * 2);
+      ctx.fillStyle = sunGrad;
+      ctx.shadowBlur = 30;
+      ctx.shadowColor = currentThemeId === 'matrix' ? '#00ff00' : '#ff00ff';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Grid
+    if (currentBackgroundId === 'grid' || currentBackgroundId === 'default') {
+      ctx.save();
+      ctx.strokeStyle = currentThemeId === 'matrix' ? 'rgba(0, 255, 0, 0.1)' : 'rgba(0, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      const gridSpacing = 80;
+      const perspectiveOffset = (visualCameraYRef.current * 0.4) % gridSpacing;
+      
+      // Horizontal lines with perspective feel
+      for (let y = perspectiveOffset; y < height; y += gridSpacing) {
+        const opacity = Math.pow(y / height, 2);
+        ctx.strokeStyle = currentThemeId === 'matrix' ? `rgba(0, 255, 0, ${opacity * 0.2})` : `rgba(0, 255, 255, ${opacity * 0.2})`;
+        ctx.beginPath(); 
+        ctx.moveTo(0, y); 
+        ctx.lineTo(width, y); 
+        ctx.stroke();
+      }
+      
+      // Vertical lines
+      for (let x = 0; x < width; x += gridSpacing) {
+        const distFromCenter = Math.abs(x - width / 2) / (width / 2);
+        ctx.strokeStyle = currentThemeId === 'matrix' ? `rgba(0, 255, 0, ${0.1 * (1 - distFromCenter)})` : `rgba(0, 255, 255, ${0.1 * (1 - distFromCenter)})`;
+        ctx.beginPath(); 
+        ctx.moveTo(x, 0); 
+        ctx.lineTo(x, height); 
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  };
+
+  const spawnNextBlock = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const prev = stackRef.current[stackRef.current.length - 1];
+    hueRef.current = (hueRef.current + 6) % 360;
+    const direction = scoreRef.current % 2 === 0 ? 1 : -1;
+    const speed = Math.min(CONFIG.MOVE_SPEED_BASE + (scoreRef.current * 0.12), CONFIG.MOVE_SPEED_MAX);
+    const range = Math.min(canvas.width * 0.3, 250);
+    const startX = direction === 1 ? prev.x - range - prev.width : prev.x + prev.width + range;
+
+    currentBlockRef.current = {
+      x: startX,
+      y: prev.y - CONFIG.BLOCK_HEIGHT,
+      width: prev.width,
+      depth: prev.depth,
+      hue: hueRef.current,
+      direction: direction,
+      speed: speed
+    };
+  }, []);
+
+  const placeBlock = useCallback(() => {
+    const current = currentBlockRef.current;
+    const prev = stackRef.current[stackRef.current.length - 1];
+    if (!current || !prev) return;
+
+    const delta = current.x - prev.x;
+    const absDelta = Math.abs(delta);
+    const overlap = current.width - absDelta;
+
+    if (overlap <= 0) {
+      handleGameOver();
+      return;
+    }
+
+    let isPerfect = false;
+    if (absDelta < CONFIG.PERFECT_TOLERANCE) {
+      isPerfect = true;
+      current.x = prev.x;
+      perfectComboRef.current++;
+      flashOpacityRef.current = 0.2;
+      setShowPerfect(true);
+      vibrate(50);
+      setTimeout(() => setShowPerfect(false), 400);
+      if (perfectComboRef.current >= 4) {
+        current.width = Math.min(CONFIG.START_WIDTH, current.width + 6);
+      }
+    } else {
+      perfectComboRef.current = 0;
+      vibrate(20);
+      const debrisWidth = absDelta;
+      const debrisX = delta > 0 ? current.x + overlap : current.x - debrisWidth;
+      
+      debrisRef.current.push({
+        x: debrisX,
+        y: current.y,
+        width: debrisWidth,
+        depth: current.depth,
+        hue: current.hue,
+        velocityX: delta > 0 ? 3 : -3,
+        velocityY: -4,
+        rotation: 0,
+        rotationSpeed: (Math.random() - 0.5) * 0.15,
+        opacity: 1
+      });
+
+      current.width = overlap;
+      if (delta < 0) current.x = prev.x;
+    }
+
+    stackRef.current.push({ ...current });
+    scoreRef.current++;
+    setScore(scoreRef.current);
+    audioManager.playStackSound(scoreRef.current, isPerfect);
+    spawnNextBlock();
+  }, [spawnNextBlock, settings.vibrationEnabled]);
+
+  const handleGameOver = useCallback(() => {
+    stateRef.current = GameState.GAME_OVER;
+    setUiState(GameState.GAME_OVER);
+    audioManager.playGameOver();
+    vibrate([100, 50, 100]);
+    
+    // Add money based on score
+    setMoney(prev => prev + scoreRef.current);
+
+    if (scoreRef.current > highScore) {
+      setHighScore(scoreRef.current);
+      localStorage.setItem('neon_stack_highscore', scoreRef.current.toString());
+    }
+    if (currentBlockRef.current) {
+      debrisRef.current.push({
+        ...currentBlockRef.current,
+        velocityX: currentBlockRef.current.direction! * 2,
+        velocityY: 2,
+        rotation: 0,
+        rotationSpeed: 0.1,
+        opacity: 1
+      } as Debris);
+      currentBlockRef.current = null;
+    }
+  }, [highScore, settings.vibrationEnabled]);
+
+  const resetGame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    stackRef.current = [];
+    debrisRef.current = [];
+    scoreRef.current = 0;
+    setScore(0);
+    perfectComboRef.current = 0;
+    hueRef.current = currentSkin.hue;
+    cameraYRef.current = 0;
+    visualCameraYRef.current = 0;
+
+    const base: Block = {
+      x: (canvas.width / 2) - (CONFIG.START_WIDTH / 2),
+      y: canvas.height - 180,
+      width: CONFIG.START_WIDTH,
+      depth: CONFIG.START_DEPTH,
+      hue: hueRef.current
+    };
+    stackRef.current.push(base);
+    spawnNextBlock();
+    stateRef.current = GameState.PLAYING;
+    setUiState(GameState.PLAYING);
+  }, [currentSkin.hue, spawnNextBlock]);
+
+  const handleInput = useCallback((e?: React.PointerEvent | KeyboardEvent | React.MouseEvent) => {
+    const now = Date.now();
+    if (now - lastInputTimeRef.current < CONFIG.INPUT_COOLDOWN) return;
+    
+    // Ignore input if in settings or market
+    if (stateRef.current === GameState.SETTINGS || stateRef.current === GameState.MARKET) return;
+
+    lastInputTimeRef.current = now;
+    if (e && 'preventDefault' in e) {
+        if ((e.target as HTMLElement).closest('button')) return;
+        e.preventDefault();
+    }
+    if (stateRef.current === GameState.START) {
+      audioManager.init();
+      audioManager.resume();
+      audioManager.playStartSound();
+      resetGame();
+    } else if (stateRef.current === GameState.GAME_OVER) {
+      audioManager.playStartSound();
+      resetGame();
+    } else if (stateRef.current === GameState.PLAYING) {
+      placeBlock();
+    } else if (stateRef.current === GameState.PAUSED) {
+      togglePause();
+    }
+  }, [resetGame, placeBlock]);
+
+  const togglePause = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (stateRef.current === GameState.PLAYING) {
+      stateRef.current = GameState.PAUSED;
+      setUiState(GameState.PAUSED);
+      audioManager.stopMusic();
+    } else if (stateRef.current === GameState.PAUSED) {
+      stateRef.current = GameState.PLAYING;
+      setUiState(GameState.PLAYING);
+      if (settings.musicEnabled) audioManager.startMusic();
+    }
+  }, [settings.musicEnabled]);
+
+  const goToHome = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    stateRef.current = GameState.START;
+    setUiState(GameState.START);
+  }, []);
+
+  const handlePurchase = (id: string, price: number) => {
+    if (money >= price && !unlockedItems.includes(id)) {
+      setMoney(prev => prev - price);
+      setUnlockedItems(prev => [...prev, id]);
+      audioManager.playStartSound(); // Reuse start sound for purchase feedback
+      vibrate(100);
+    }
+  };
+
+  const loop = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+
+    drawBackground(ctx, canvas.width, canvas.height);
+
+    if (stateRef.current === GameState.PAUSED) {
+      stackRef.current.forEach(b => drawBlock3D(ctx, b));
+      if (currentBlockRef.current) drawBlock3D(ctx, currentBlockRef.current);
+      requestRef.current = requestAnimationFrame(loop);
+      return;
+    }
+
+    if (stackRef.current.length > 0) {
+      const top = stackRef.current[stackRef.current.length - 1];
+      const targetY = (canvas.height * 0.75) - top.y;
+      cameraYRef.current = targetY;
+      visualCameraYRef.current += (cameraYRef.current - visualCameraYRef.current) * CONFIG.CAMERA_LERP;
+    }
+
+    stackRef.current.forEach(b => drawBlock3D(ctx, b));
+
+    debrisRef.current.forEach(d => {
+      d.x += d.velocityX;
+      d.y += d.velocityY;
+      d.velocityY += 0.25;
+      d.rotation += d.rotationSpeed;
+      d.opacity -= 0.015;
+      drawNote(ctx, d);
+    });
+    debrisRef.current = debrisRef.current.filter(d => d.opacity > 0);
+
+    if (stateRef.current === GameState.PLAYING && currentBlockRef.current) {
+      const b = currentBlockRef.current;
+      const prev = stackRef.current[stackRef.current.length - 1];
+      const range = Math.min(canvas.width * 0.3, 250);
+      
+      b.x += b.direction! * b.speed!;
+      
+      if (b.x > prev.x + prev.width + range) b.direction = -1;
+      if (b.x < prev.x - range - b.width) b.direction = 1;
+      
+      drawBlock3D(ctx, b);
+    }
+
+    if (flashOpacityRef.current > 0) {
+      ctx.fillStyle = `rgba(0, 255, 255, ${flashOpacityRef.current})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      flashOpacityRef.current -= 0.04;
+    }
+
+    requestRef.current = requestAnimationFrame(loop);
+  };
+
+  useEffect(() => {
+    requestRef.current = requestAnimationFrame(loop);
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.code === 'Enter') handleInput(e);
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      cancelAnimationFrame(requestRef.current);
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [handleInput]);
+
+  return (
+    <div className="relative w-full h-screen overflow-hidden bg-black select-none touch-none">
+      <canvas
+        ref={canvasRef}
+        className="block w-full h-full cursor-pointer"
+        onPointerDown={(e) => handleInput(e)}
+      />
+
+      <div className="absolute top-0 left-0 w-full p-10 flex justify-between items-start pointer-events-none z-20">
+        <div className="flex flex-col">
+          <span className="text-cyan-400 text-xs font-mono tracking-[0.4em] uppercase opacity-70 mb-1">{t.elevation}</span>
+          <h1 className="text-white text-7xl font-black italic tracking-tighter drop-shadow-[0_0_30px_rgba(0,243,255,0.8)]">
+            {score}
+          </h1>
+        </div>
+        <div className="flex items-center gap-6">
+          {uiState === GameState.PLAYING && (
+            <button 
+              className="pointer-events-auto p-4 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors rounded-full"
+              onClick={togglePause}
+            >
+              <Pause size={24} className="text-white" />
+            </button>
+          )}
+          <div className="text-right flex flex-col items-end">
+            <span className="text-fuchsia-500 text-[10px] font-mono tracking-widest uppercase mb-1 opacity-70">{t.maxRecord}</span>
+            <div className="text-white text-3xl font-bold font-mono border-b-2 border-fuchsia-600 px-2 italic drop-shadow-[0_0_20px_rgba(255,0,255,0.5)]">
+              {highScore}
+            </div>
+            <div className="mt-2 text-yellow-400 text-[10px] font-mono flex items-center gap-1">
+              <ShoppingBag size={10} /> {money}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {showPerfect && (
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-30">
+          <div className="text-white text-5xl font-black italic tracking-tighter drop-shadow-[0_0_15px_cyan] animate-bounce">{t.perfect}</div>
+        </div>
+      )}
+
+      {uiState === GameState.START && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#02020a]/90 backdrop-blur-sm z-40">
+          <div className="text-center mb-16">
+            <h2 className="text-cyan-500 text-sm font-mono tracking-[0.6em] uppercase mb-4 animate-pulse">{t.neuralLink}</h2>
+            <h1 className="text-7xl md:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-cyan-300 to-fuchsia-600 tracking-tighter leading-none">
+              NEON<br/>STACK
+            </h1>
+          </div>
+          
+          <div className="flex flex-col gap-4 items-center">
+            <button 
+              className="group relative px-20 py-6 overflow-hidden bg-transparent border-2 border-white/20 hover:border-cyan-400 transition-colors flex items-center gap-3"
+              onClick={(e) => { e.stopPropagation(); handleInput(); }}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-cyan-600/20 to-fuchsia-600/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+              <Play size={20} className="text-cyan-400" />
+              <span className="relative text-white font-bold tracking-[0.3em] uppercase text-sm">{t.start}</span>
+            </button>
+
+            <div className="flex gap-4">
+              <button 
+                className="p-4 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors rounded-full"
+                onClick={(e) => { e.stopPropagation(); setUiState(GameState.SETTINGS); stateRef.current = GameState.SETTINGS; }}
+              >
+                <SettingsIcon size={24} className="text-white" />
+              </button>
+              <button 
+                className="p-4 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors rounded-full"
+                onClick={(e) => { e.stopPropagation(); setUiState(GameState.MARKET); stateRef.current = GameState.MARKET; }}
+              >
+                <ShoppingBag size={24} className="text-white" />
+              </button>
+            </div>
+          </div>
+          
+          <p className="mt-10 text-white/30 font-mono text-[10px] tracking-widest uppercase">{t.syncing}</p>
+        </div>
+      )}
+
+      {uiState === GameState.SETTINGS && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-xl z-[60] p-6">
+          <div className="w-full max-w-md bg-white/5 border border-white/10 rounded-3xl p-8">
+            <div className="flex justify-between items-center mb-10">
+              <h2 className="text-white text-2xl font-black italic tracking-tighter flex items-center gap-3">
+                <SettingsIcon className="text-cyan-400" /> {t.settings}
+              </h2>
+              <button onClick={() => { setUiState(GameState.START); stateRef.current = GameState.START; }} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                <X className="text-white" />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div className="flex justify-between items-center p-4 bg-white/5 rounded-2xl">
+                <div className="flex items-center gap-3 text-white font-bold tracking-widest text-xs">
+                  <Languages size={18} className="text-fuchsia-500" /> {t.language}
+                </div>
+                <button 
+                  onClick={() => setSettings(s => ({ ...s, language: s.language === 'tr' ? 'en' : 'tr' }))}
+                  className="px-4 py-2 bg-cyan-500 text-black font-black text-[10px] rounded-lg uppercase"
+                >
+                  {settings.language === 'tr' ? 'TÜRKÇE' : 'ENGLISH'}
+                </button>
+              </div>
+
+              <div className="flex justify-between items-center p-4 bg-white/5 rounded-2xl">
+                <div className="flex items-center gap-3 text-white font-bold tracking-widest text-xs">
+                  {settings.soundEnabled ? <Volume2 size={18} className="text-cyan-400" /> : <VolumeX size={18} className="text-red-400" />} {t.sound}
+                </div>
+                <button 
+                  onClick={() => setSettings(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${settings.soundEnabled ? 'bg-cyan-500' : 'bg-white/20'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.soundEnabled ? 'left-7' : 'left-1'}`} />
+                </button>
+              </div>
+
+              <div className="flex justify-between items-center p-4 bg-white/5 rounded-2xl">
+                <div className="flex items-center gap-3 text-white font-bold tracking-widest text-xs">
+                  {settings.musicEnabled ? <Music2 size={18} className="text-fuchsia-400" /> : <Music size={18} className="text-red-400" />} {t.music}
+                </div>
+                <button 
+                  onClick={() => setSettings(s => ({ ...s, musicEnabled: !s.musicEnabled }))}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${settings.musicEnabled ? 'bg-fuchsia-500' : 'bg-white/20'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.musicEnabled ? 'left-7' : 'left-1'}`} />
+                </button>
+              </div>
+
+              <div className="flex justify-between items-center p-4 bg-white/5 rounded-2xl">
+                <div className="flex items-center gap-3 text-white font-bold tracking-widest text-xs">
+                  <Smartphone size={18} className="text-yellow-400" /> {t.vibration}
+                </div>
+                <button 
+                  onClick={() => setSettings(s => ({ ...s, vibrationEnabled: !s.vibrationEnabled }))}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${settings.vibrationEnabled ? 'bg-yellow-500' : 'bg-white/20'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${settings.vibrationEnabled ? 'left-7' : 'left-1'}`} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uiState === GameState.MARKET && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-xl z-[60] p-6">
+          <div className="w-full max-w-md bg-white/5 border border-white/10 rounded-3xl p-8 max-h-[80vh] flex flex-col">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-white text-2xl font-black italic tracking-tighter flex items-center gap-3">
+                <ShoppingBag className="text-yellow-400" /> {t.market}
+              </h2>
+              <div className="text-yellow-400 font-mono text-sm flex items-center gap-2">
+                <ShoppingBag size={14} /> {money}
+              </div>
+              <button onClick={() => { setUiState(GameState.START); stateRef.current = GameState.START; }} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                <X className="text-white" />
+              </button>
+            </div>
+
+            <div className="flex gap-2 mb-6 p-1 bg-white/5 rounded-xl">
+              <button 
+                onClick={() => setMarketTab('skins')}
+                className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all flex items-center justify-center gap-2 ${marketTab === 'skins' ? 'bg-cyan-500 text-black' : 'text-white/40 hover:text-white'}`}
+              >
+                <Palette size={12} /> {t.skins}
+              </button>
+              <button 
+                onClick={() => setMarketTab('backgrounds')}
+                className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all flex items-center justify-center gap-2 ${marketTab === 'backgrounds' ? 'bg-fuchsia-500 text-black' : 'text-white/40 hover:text-white'}`}
+              >
+                <LayoutGrid size={12} /> {t.backgrounds}
+              </button>
+              <button 
+                onClick={() => setMarketTab('themes')}
+                className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase transition-all flex items-center justify-center gap-2 ${marketTab === 'themes' ? 'bg-yellow-500 text-black' : 'text-white/40 hover:text-white'}`}
+              >
+                <Palette size={12} /> {t.themes}
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+              {marketTab === 'skins' && skins.map(skin => (
+                <div key={skin.id} className={`p-4 rounded-2xl border transition-all flex justify-between items-center ${currentSkinId === skin.id ? 'bg-white/15 border-cyan-400' : 'bg-white/5 border-white/10'}`}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg shadow-lg" style={{ backgroundColor: `hsl(${skin.hue}, 100%, 50%)` }} />
+                    <div>
+                      <div className="text-white font-bold text-sm tracking-tight">{skin.name}</div>
+                      <div className="text-white/40 text-[10px] font-mono uppercase tracking-widest">{skin.unlocked ? t.unlocked : `${skin.price} ${t.money}`}</div>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      if (skin.unlocked) {
+                        setCurrentSkinId(skin.id);
+                      } else {
+                        handlePurchase(skin.id, skin.price);
+                      }
+                    }}
+                    disabled={!skin.unlocked && money < skin.price}
+                    className={`px-4 py-2 rounded-lg font-black text-[10px] transition-all ${
+                      currentSkinId === skin.id 
+                        ? 'bg-cyan-500 text-black' 
+                        : skin.unlocked 
+                          ? 'bg-white/10 text-white hover:bg-white/20' 
+                          : money >= skin.price
+                            ? 'bg-yellow-500 text-black hover:bg-yellow-400'
+                            : 'bg-white/5 text-white/20 cursor-not-allowed'
+                    }`}
+                  >
+                    {currentSkinId === skin.id ? t.selected : skin.unlocked ? t.select : `${t.buy} (${skin.price})`}
+                  </button>
+                </div>
+              ))}
+
+              {marketTab === 'backgrounds' && backgrounds.map(bg => (
+                <div key={bg.id} className={`p-4 rounded-2xl border transition-all flex justify-between items-center ${currentBackgroundId === bg.id ? 'bg-white/15 border-fuchsia-400' : 'bg-white/5 border-white/10'}`}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg bg-fuchsia-500/20 flex items-center justify-center">
+                      <LayoutGrid className="text-fuchsia-400" size={20} />
+                    </div>
+                    <div>
+                      <div className="text-white font-bold text-sm tracking-tight">{bg.name}</div>
+                      <div className="text-white/40 text-[10px] font-mono uppercase tracking-widest">{bg.unlocked ? t.unlocked : `${bg.price} ${t.money}`}</div>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      if (bg.unlocked) {
+                        setCurrentBackgroundId(bg.id);
+                      } else {
+                        handlePurchase(bg.id, bg.price);
+                      }
+                    }}
+                    disabled={!bg.unlocked && money < bg.price}
+                    className={`px-4 py-2 rounded-lg font-black text-[10px] transition-all ${
+                      currentBackgroundId === bg.id 
+                        ? 'bg-fuchsia-500 text-black' 
+                        : bg.unlocked 
+                          ? 'bg-white/10 text-white hover:bg-white/20' 
+                          : money >= bg.price
+                            ? 'bg-yellow-500 text-black hover:bg-yellow-400'
+                            : 'bg-white/5 text-white/20 cursor-not-allowed'
+                    }`}
+                  >
+                    {currentBackgroundId === bg.id ? t.selected : bg.unlocked ? t.select : `${t.buy} (${bg.price})`}
+                  </button>
+                </div>
+              ))}
+
+              {marketTab === 'themes' && themes.map(theme => (
+                <div key={theme.id} className={`p-4 rounded-2xl border transition-all flex justify-between items-center ${currentThemeId === theme.id ? 'bg-white/15 border-yellow-400' : 'bg-white/5 border-white/10'}`}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
+                      <Palette className="text-yellow-400" size={20} />
+                    </div>
+                    <div>
+                      <div className="text-white font-bold text-sm tracking-tight">{theme.name}</div>
+                      <div className="text-white/40 text-[10px] font-mono uppercase tracking-widest">{theme.unlocked ? t.unlocked : `${theme.price} ${t.money}`}</div>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      if (theme.unlocked) {
+                        setCurrentThemeId(theme.id);
+                      } else {
+                        handlePurchase(theme.id, theme.price);
+                      }
+                    }}
+                    disabled={!theme.unlocked && money < theme.price}
+                    className={`px-4 py-2 rounded-lg font-black text-[10px] transition-all ${
+                      currentThemeId === theme.id 
+                        ? 'bg-yellow-500 text-black' 
+                        : theme.unlocked 
+                          ? 'bg-white/10 text-white hover:bg-white/20' 
+                          : money >= theme.price
+                            ? 'bg-yellow-500 text-black hover:bg-yellow-400'
+                            : 'bg-white/5 text-white/20 cursor-not-allowed'
+                    }`}
+                  >
+                    {currentThemeId === theme.id ? t.selected : theme.unlocked ? t.select : `${t.buy} (${theme.price})`}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uiState === GameState.PAUSED && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-md z-50">
+          <h2 className="text-white text-6xl font-black italic tracking-tighter mb-10 drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]">{t.pause}</h2>
+          <div className="flex flex-col gap-4">
+            <button 
+              className="group relative px-20 py-6 bg-cyan-500 text-black font-black uppercase tracking-[0.3em] text-sm hover:bg-white transition-all active:scale-95 flex items-center justify-center gap-3 min-w-[280px]"
+              onClick={togglePause}
+            >
+              <Play size={20} />
+              {t.resume}
+            </button>
+            <button 
+              className="group relative px-20 py-6 bg-white/10 text-white border border-white/20 font-black uppercase tracking-[0.3em] text-sm hover:bg-white/20 transition-all active:scale-95 flex items-center justify-center gap-3 min-w-[280px]"
+              onClick={goToHome}
+            >
+              <Home size={20} />
+              {t.home}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {uiState === GameState.GAME_OVER && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-xl z-50 animate-in fade-in duration-700">
+          <h2 className="text-fuchsia-600 text-6xl font-black italic tracking-tighter mb-4 drop-shadow-[0_0_20px_#f0f]">{t.gameOver}</h2>
+          <p className="text-white/40 font-mono text-xs uppercase tracking-[0.4em] mb-10">{t.stabilityLost}</p>
+          
+          <div className="bg-white/5 p-10 rounded-2xl border border-white/10 mb-10 text-center min-w-[280px]">
+            <div className="text-cyan-400 text-[10px] uppercase tracking-widest mb-3 font-mono">{t.blocksAscended}</div>
+            <div className="text-white text-7xl font-black mb-4">{score}</div>
+            {score >= highScore && score > 0 && (
+                <div className="text-yellow-400 text-[10px] font-mono tracking-tighter animate-pulse uppercase">{t.newRecord}</div>
+            )}
+            <div className="mt-4 text-yellow-400 text-xs font-mono flex items-center justify-center gap-2">
+              <Trophy size={14} /> +{score} {t.money}
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <button 
+              className="group relative px-12 py-6 bg-white text-black font-black uppercase tracking-[0.3em] text-sm hover:bg-cyan-400 transition-all active:scale-95 flex items-center justify-center gap-3 min-w-[240px]"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleInput();
+              }}
+            >
+              <RotateCcw size={18} className="group-hover:rotate-[-180deg] transition-transform duration-500" />
+              {t.tryAgain}
+            </button>
+
+            <button 
+              className="group relative px-12 py-6 bg-white/10 text-white font-black uppercase tracking-[0.3em] text-sm hover:bg-white/20 transition-all active:scale-95 flex items-center justify-center gap-3 min-w-[240px] border border-white/20"
+              onClick={goToHome}
+            >
+              <Home size={18} className="group-hover:scale-110 transition-transform" />
+              {t.home}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="absolute inset-0 pointer-events-none opacity-[0.08] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.1),rgba(0,255,0,0.05),rgba(0,0,255,0.1))] bg-[length:100%_3px,4px_100%]"></div>
+      <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-fuchsia-900/20 via-transparent to-cyan-900/20 mix-blend-overlay"></div>
+    </div>
+  );
+};
+
+export default GameCanvas;
